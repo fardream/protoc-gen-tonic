@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
 };
 
+use anyhow::Context;
 use clap::Parser;
 use prost::Message;
 use prost_build::{Config, Module};
@@ -125,10 +126,15 @@ fn main() {
 
     let buf = if args.input == "-" {
         let mut buf = Vec::new();
-        stdin().read_to_end(&mut buf).unwrap();
+        stdin()
+            .read_to_end(&mut buf)
+            .context("failed to read from stdin")
+            .unwrap();
         buf
     } else {
-        read(&args.input).unwrap()
+        read(&args.input)
+            .with_context(|| format!("failed to read input file {}", args.input))
+            .unwrap()
     };
 
     let file_descriptor_set = FileDescriptorSet::decode(&*buf).unwrap();
@@ -174,7 +180,9 @@ fn main() {
 
         match output_map.get(input_file) {
             Some(p) => {
-                let mut output = File::create(p).unwrap();
+                let mut output = File::create(p)
+                    .with_context(|| format!("failed to create file {:?}", p))
+                    .unwrap();
                 write_with_module(&mut output, content, &modules_in_file);
             }
             None => {
