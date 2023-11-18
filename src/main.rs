@@ -47,14 +47,13 @@ struct Args {
     #[arg(long)]
     server_attribute: Vec<String>,
 
-    /// module specific output map.
-    /// the module here is the rust module, which is generated from the proto package path.
-    /// for a package `a.b.c`, the module will be `a::b::c`.
-    /// the map should be in the format of `a::b::c=path/to/output.rs`.
+    /// module a specific input file to a specific output file
+    /// the map should be in the format of `path/to/input.proto=path/to/output.rs`.
     #[arg(long)]
-    module_output_map: Vec<String>,
+    output_map: Vec<String>,
 
-    /// add additional module declarations in the file. the input proto is identified by its rust module path derived from its package, so `a.b.c` can be identified by `a::b::c`.
+    /// add additional module declarations in the file. the input proto is identified by its path,
+    /// in the format of `path/to/input.proto=a::b::c`.
     #[arg(long)]
     module_in_file: Vec<String>,
 }
@@ -134,41 +133,46 @@ fn main() {
 
     let file_descriptor_set = FileDescriptorSet::decode(&*buf).unwrap();
 
+    let mut module_to_input: HashMap<Module, &str> = HashMap::new();
+
     let request = file_descriptor_set
         .file
-        .into_iter()
-        .map(|d| (Module::from_protobuf_package_name(d.package()), d))
+        .iter()
+        .map(|d| {
+            let m = Module::from_protobuf_package_name(d.package());
+            if module_to_input.contains_key(&m) {
+                panic!("module duplicate: {}", m);
+            }
+
+            module_to_input.insert(m.clone(), d.name());
+            (m, d.to_owned())
+        })
         .collect();
 
     let modules = prost_config.generate(request).unwrap();
 
     let mut output_file: Option<File> = None;
 
-    let mut module_output_map: HashMap<Module, PathBuf> = HashMap::new();
-    for x in args.module_output_map.iter() {
-        let (module_name, output_file_name) = split_arg(x);
-        module_output_map.insert(
-            Module::from_protobuf_package_name(module_name),
-            PathBuf::from(output_file_name),
-        );
+    let mut output_map: HashMap<&str, PathBuf> = HashMap::new();
+    for x in args.output_map.iter() {
+        let (input_file, output_file_name) = split_arg(x);
+        output_map.insert(input_file, PathBuf::from(output_file_name));
     }
 
-    let mut module_in_file_map: HashMap<Module, Vec<&str>> = HashMap::new();
+    let mut module_in_file_map: HashMap<&str, Vec<&str>> = HashMap::new();
     for x in args.module_in_file.iter() {
-        let (module_name, add_module) = split_arg(x);
-        module_in_file_map.insert(
-            Module::from_protobuf_package_name(module_name),
-            add_module.split("::").collect(),
-        );
+        let (input_file, add_module) = split_arg(x);
+        module_in_file_map.insert(input_file, add_module.split("::").collect());
     }
 
     for (module, content) in &modules {
-        let modules_in_file = match module_in_file_map.get(module) {
+        let input_file = module_to_input.get(module).unwrap();
+        let modules_in_file = match module_in_file_map.get(input_file) {
             Some(x) => x.clone(),
             None => vec![],
         };
 
-        match module_output_map.get(module) {
+        match output_map.get(input_file) {
             Some(p) => {
                 let mut output = File::create(p).unwrap();
                 write_with_module(&mut output, content, &modules_in_file);
