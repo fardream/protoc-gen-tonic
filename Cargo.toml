@@ -1,0 +1,12 @@
+[package]
+name = "protoc-gen-tonic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.4.8", features = ["derive"] }
+prost = "0.12.1"
+prost-build = "0.12.1"
+prost-types = "0.12.1"
+tonic = { version = "0.10.2", features = ["transport", "tls"] }
+tonic-build = "0.10.2"
