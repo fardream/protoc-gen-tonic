@@ -48,11 +48,15 @@ struct Args {
     server_attribute: Vec<String>,
 
     /// module specific output map.
+    /// the module here is the rust module, which is generated from the proto package path.
+    /// for a package `a.b.c`, the module will be `a::b::c`.
+    /// the map should be in the format of `a::b::c=path/to/output.rs`.
     #[arg(long)]
     module_output_map: Vec<String>,
 
+    /// add additional module declarations in the file. the input proto is identified by its rust module path derived from its package, so `a.b.c` can be identified by `a::b::c`.
     #[arg(long)]
-    source_relative: bool,
+    module_in_file: Vec<String>,
 }
 
 fn split_arg(s: &str) -> (&str, &str) {
@@ -62,6 +66,16 @@ fn split_arg(s: &str) -> (&str, &str) {
     }
 
     (segs[0], segs[1])
+}
+
+fn write_with_module(f: &mut impl Write, content: &str, modules: &[&str]) {
+    for x in modules.iter() {
+        writeln!(f, "pub mod {} {{", x).unwrap();
+    }
+    writeln!(f, "{}", content).unwrap();
+    for _ in modules.iter() {
+        writeln!(f, "}}").unwrap();
+    }
 }
 
 fn main() {
@@ -139,11 +153,25 @@ fn main() {
         );
     }
 
+    let mut module_in_file_map: HashMap<Module, Vec<&str>> = HashMap::new();
+    for x in args.module_in_file.iter() {
+        let (module_name, add_module) = split_arg(x);
+        module_in_file_map.insert(
+            Module::from_protobuf_package_name(module_name),
+            add_module.split("::").collect(),
+        );
+    }
+
     for (module, content) in &modules {
+        let modules_in_file = match module_in_file_map.get(module) {
+            Some(x) => x.clone(),
+            None => vec![],
+        };
+
         match module_output_map.get(module) {
             Some(p) => {
                 let mut output = File::create(p).unwrap();
-                writeln!(output, "{}", content).unwrap();
+                write_with_module(&mut output, content, &modules_in_file);
             }
             None => {
                 if output_file.is_none() {
@@ -152,14 +180,11 @@ fn main() {
                     }
                     output_file = Some(File::create(args.output.as_ref().unwrap()).unwrap());
                 }
-
-                writeln!(
-                    output_file.as_ref().unwrap(),
-                    "// module: {}\n{}",
-                    module,
-                    content
-                )
-                .unwrap();
+                write_with_module(
+                    &mut output_file.as_ref().unwrap(),
+                    content,
+                    &modules_in_file,
+                );
             }
         }
     }
