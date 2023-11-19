@@ -9,6 +9,7 @@ use anyhow::Context;
 use clap::Parser;
 use prost::Message;
 use prost_build::{Config, Module};
+use prost_reflect::DescriptorPool;
 use prost_types::FileDescriptorSet;
 
 /// protoc-gen-tonic is a proto plugin that generate prost and tonic code.
@@ -61,6 +62,12 @@ struct Args {
     /// create directories
     #[arg(long)]
     create_directory: bool,
+
+    /// bytes with the descriptor bin data for proto-reflect
+    /// for example, if the bytes will be defined in `lib.rs` and named `PROTO_DEF`,
+    /// the value should be `crate::PROTO_DEF`.
+    #[arg(long)]
+    proto_reflect_byte: Option<String>,
 }
 
 fn split_arg(s: &str) -> (&str, &str) {
@@ -142,6 +149,24 @@ fn main() {
     };
 
     let file_descriptor_set = FileDescriptorSet::decode(&*buf).unwrap();
+
+    if let Some(proto_reflect_bytes) = args.proto_reflect_byte {
+        let descriptor = DescriptorPool::decode(&*buf).unwrap();
+        let pool_attribute = format!(
+            r#"#[prost_reflect(file_descriptor_set_bytes = "{}")]"#,
+            proto_reflect_bytes,
+        );
+        for message in descriptor.all_messages() {
+            let full_name = message.full_name();
+            prost_config
+                .type_attribute(full_name, "#[derive(::prost_reflect::ReflectMessage)]")
+                .type_attribute(
+                    full_name,
+                    &format!(r#"#[prost_reflect(message_name = "{}")]"#, full_name,),
+                )
+                .type_attribute(full_name, &pool_attribute);
+        }
+    }
 
     let mut module_to_input: HashMap<Module, &str> = HashMap::new();
 
