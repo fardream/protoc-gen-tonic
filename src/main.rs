@@ -9,8 +9,9 @@ use anyhow::Context;
 use clap::Parser;
 use prost::Message;
 use prost_build::{Config, Module};
-use prost_reflect::DescriptorPool;
 use prost_types::FileDescriptorSet;
+
+const PROST_REFLECT_FILE_DESCRIPTOR_SET_BYTES: &str = "PROST_REFLECT_FILE_DESCRIPTOR_BYTES";
 
 /// protoc-gen-tonic is a proto plugin that generate prost and tonic code.
 /// The output file can either source relative or specified by options (all relative to the output directory).
@@ -63,11 +64,11 @@ struct Args {
     #[arg(long)]
     create_directory: bool,
 
-    /// bytes with the descriptor bin data for proto-reflect
-    /// for example, if the bytes will be defined in `lib.rs` and named `PROTO_DEF`,
-    /// the value should be `crate::PROTO_DEF`.
+    /// turn on prost-reflect support.
+    /// this will add derives for prost-reflect's ReflectMessage,
+    /// and add the file descriptor bytes to the generated code file.
     #[arg(long)]
-    proto_reflect_byte: Option<String>,
+    prost_reflect: bool,
 }
 
 fn split_arg(s: &str) -> (&str, &str) {
@@ -87,6 +88,33 @@ fn write_with_module(f: &mut impl Write, content: &str, modules: &[&str]) {
     for _ in modules.iter() {
         writeln!(f, "}}").unwrap();
     }
+}
+
+fn write_file_descriptor_bytes(f: &mut impl Write, file_descriptor_set_bytes: &[u8]) {
+    writeln!(
+        f,
+        "pub const {}_LEN: usize = {};",
+        PROST_REFLECT_FILE_DESCRIPTOR_SET_BYTES,
+        file_descriptor_set_bytes.len()
+    )
+    .unwrap();
+    write!(
+        f,
+        "pub const {}: &[u8] = &[",
+        PROST_REFLECT_FILE_DESCRIPTOR_SET_BYTES,
+    )
+    .unwrap();
+
+    for (i, c) in file_descriptor_set_bytes.iter().enumerate() {
+        if i % 32 == 0 {
+            writeln!(f).unwrap();
+            write!(f, "    {}u8,", c).unwrap();
+        } else {
+            write!(f, " {}u8,", c).unwrap();
+        }
+    }
+    writeln!(f).unwrap();
+    writeln!(f, "];").unwrap();
 }
 
 fn main() {
@@ -150,21 +178,22 @@ fn main() {
 
     let file_descriptor_set = FileDescriptorSet::decode(&*buf).unwrap();
 
-    if let Some(proto_reflect_bytes) = args.proto_reflect_byte {
-        let descriptor = DescriptorPool::decode(&*buf).unwrap();
+    if args.prost_reflect {
         let pool_attribute = format!(
             r#"#[prost_reflect(file_descriptor_set_bytes = "{}")]"#,
-            proto_reflect_bytes,
+            PROST_REFLECT_FILE_DESCRIPTOR_SET_BYTES,
         );
-        for message in descriptor.all_messages() {
-            let full_name = message.full_name();
-            prost_config
-                .type_attribute(full_name, "#[derive(::prost_reflect::ReflectMessage)]")
-                .type_attribute(
-                    full_name,
-                    &format!(r#"#[prost_reflect(message_name = "{}")]"#, full_name,),
-                )
-                .type_attribute(full_name, &pool_attribute);
+        for afile in file_descriptor_set.file.iter() {
+            for message in afile.message_type.iter() {
+                let full_name = format!("{}.{}", afile.package(), message.name());
+                prost_config
+                    .type_attribute(&full_name, "#[derive(::prost_reflect::ReflectMessage)]")
+                    .type_attribute(
+                        &full_name,
+                        &format!(r#"#[prost_reflect(message_name = "{}")]"#, full_name,),
+                    )
+                    .type_attribute(full_name, &pool_attribute);
+            }
         }
     }
 
@@ -219,6 +248,9 @@ fn main() {
                 let mut output = File::create(p)
                     .with_context(|| format!("failed to create file {:?}", p))
                     .unwrap();
+                if args.prost_reflect {
+                    write_file_descriptor_bytes(&mut output, &buf);
+                }
                 write_with_module(&mut output, content, &modules_in_file);
             }
             None => {
@@ -235,6 +267,9 @@ fn main() {
                         }
                     }
                     output_file = Some(File::create(output_path).unwrap());
+                    if args.prost_reflect {
+                        write_file_descriptor_bytes(&mut output_file.as_ref().unwrap(), &buf);
+                    }
                 }
                 write_with_module(
                     &mut output_file.as_ref().unwrap(),
