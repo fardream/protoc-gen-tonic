@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fs::{read, File},
+    fs::{create_dir_all, read, File},
     io::{stdin, Read, Write},
     path::PathBuf,
 };
@@ -57,6 +57,10 @@ struct Args {
     /// in the format of `path/to/input.proto=a::b::c`.
     #[arg(long)]
     module_in_file: Vec<String>,
+
+    /// create directories
+    #[arg(long)]
+    create_directory: bool,
 }
 
 fn split_arg(s: &str) -> (&str, &str) {
@@ -180,6 +184,13 @@ fn main() {
 
         match output_map.get(input_file) {
             Some(p) => {
+                if args.create_directory {
+                    if let Some(parent) = p.parent() {
+                        create_dir_all(parent)
+                            .with_context(|| format!("failed to create directory {:?}", parent))
+                            .unwrap();
+                    }
+                }
                 let mut output = File::create(p)
                     .with_context(|| format!("failed to create file {:?}", p))
                     .unwrap();
@@ -190,7 +201,15 @@ fn main() {
                     if args.output.is_none() {
                         panic!("module {} has no output", module);
                     }
-                    output_file = Some(File::create(args.output.as_ref().unwrap()).unwrap());
+                    let output_path = args.output.as_ref().unwrap();
+                    if args.create_directory {
+                        if let Some(parent) = output_path.parent() {
+                            create_dir_all(parent)
+                                .with_context(|| format!("failed to create directory {:?}", parent))
+                                .unwrap();
+                        }
+                    }
+                    output_file = Some(File::create(output_path).unwrap());
                 }
                 write_with_module(
                     &mut output_file.as_ref().unwrap(),
