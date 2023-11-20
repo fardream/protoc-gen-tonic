@@ -69,6 +69,9 @@ struct Args {
     /// and add the file descriptor bytes to the generated code file.
     #[arg(long)]
     prost_reflect: bool,
+
+    #[arg(long)]
+    reflect_dep: Vec<PathBuf>,
 }
 
 fn split_arg(s: &str) -> (&str, &str) {
@@ -90,14 +93,7 @@ fn write_with_module(f: &mut impl Write, content: &str, modules: &[&str]) {
     }
 }
 
-fn write_file_descriptor_bytes(f: &mut impl Write, file_descriptor_set_bytes: &[u8]) {
-    writeln!(
-        f,
-        "pub const {}_LEN: usize = {};",
-        PROST_REFLECT_FILE_DESCRIPTOR_SET_BYTES,
-        file_descriptor_set_bytes.len()
-    )
-    .unwrap();
+fn write_file_descriptor_bytes(f: &mut impl Write, file_descriptor_set_bytes: &[Vec<u8>]) {
     write!(
         f,
         "pub const {}: &[u8] = &[",
@@ -105,12 +101,16 @@ fn write_file_descriptor_bytes(f: &mut impl Write, file_descriptor_set_bytes: &[
     )
     .unwrap();
 
-    for (i, c) in file_descriptor_set_bytes.iter().enumerate() {
-        if i % 32 == 0 {
-            writeln!(f).unwrap();
-            write!(f, "    {}u8,", c).unwrap();
-        } else {
-            write!(f, " {}u8,", c).unwrap();
+    let mut i: usize = 0;
+    for des in file_descriptor_set_bytes.iter() {
+        for c in des.iter() {
+            if i % 32 == 0 {
+                writeln!(f).unwrap();
+                write!(f, "    {}u8,", c).unwrap();
+            } else {
+                write!(f, " {}u8,", c).unwrap();
+            }
+            i += 1;
         }
     }
     writeln!(f).unwrap();
@@ -178,11 +178,23 @@ fn main() {
 
     let file_descriptor_set = FileDescriptorSet::decode(&*buf).unwrap();
 
+    let mut reflect_bytes: Vec<Vec<u8>> = vec![];
+
     if args.prost_reflect {
         let pool_attribute = format!(
             r#"#[prost_reflect(file_descriptor_set_bytes = "{}")]"#,
             PROST_REFLECT_FILE_DESCRIPTOR_SET_BYTES,
         );
+        if args.reflect_dep.is_empty() {
+            reflect_bytes.push(buf.clone());
+        } else {
+            for f in args.reflect_dep.iter() {
+                let c = read(f)
+                    .with_context(|| format!("failed to read {:?}", f))
+                    .unwrap();
+                reflect_bytes.push(c);
+            }
+        }
         for afile in file_descriptor_set.file.iter() {
             for message in afile.message_type.iter() {
                 let full_name = format!("{}.{}", afile.package(), message.name());
@@ -249,7 +261,7 @@ fn main() {
                     .with_context(|| format!("failed to create file {:?}", p))
                     .unwrap();
                 if args.prost_reflect {
-                    write_file_descriptor_bytes(&mut output, &buf);
+                    write_file_descriptor_bytes(&mut output, &reflect_bytes);
                 }
                 write_with_module(&mut output, content, &modules_in_file);
             }
@@ -268,7 +280,10 @@ fn main() {
                     }
                     output_file = Some(File::create(output_path).unwrap());
                     if args.prost_reflect {
-                        write_file_descriptor_bytes(&mut output_file.as_ref().unwrap(), &buf);
+                        write_file_descriptor_bytes(
+                            &mut output_file.as_ref().unwrap(),
+                            &reflect_bytes,
+                        );
                     }
                 }
                 write_with_module(
